@@ -113,12 +113,12 @@ function sim(a,b){ const m=a.length,n=b.length; if(!m||!n) return 0; const dp=Ar
 
 /* OCR */
 async function runOcrOnFile(f){
-  const worker = await Tesseract.createWorker({
-    // まずローカルtessdataを探す。なければCDNへ（Pagesオンライン運用向け）
-    langPath: './tessdata',
-    gzip: false,
-    logger: m => { if(m.status) log(`${m.status} ${m.progress?Math.round(m.progress*100):""}%`) }
-  });
+ const worker = await Tesseract.createWorker({
+  langPath: './tessdata',
+  gzip: false
+});
+// loggerオプションは削除
+
   try{
     await worker.loadLanguage('jpn+eng');
   }catch(e){
@@ -188,3 +188,4 @@ function downloadCSV(name, rows){
 </script>
 </body>
 </html>
+
