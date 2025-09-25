@@ -112,29 +112,27 @@ function normalize(s){ s=s.normalize("NFKC"); s=s.replace(/[‐－ー–—-]/g,
 function sim(a,b){ const m=a.length,n=b.length; if(!m||!n) return 0; const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0)); for(let i=0;i<=m;i++) dp[i][0]=i; for(let j=0;j<=n;j++) dp[0][j]=j; for(let i=1;i<m+1;i++){ for(let j=1;j<n+1;j++){ const cost=a[i-1]===b[j-1]?0:1; dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+cost);} } const dist=dp[m][n]; return Math.round((1 - dist/Math.max(m,n))*100); }
 
 /* OCR */
-// 置き換え：OCR実行部分
+// これに差し替え
 async function runOcrOnFile(f){
-  // まずローカル tessdata を試す
-  let worker = await Tesseract.createWorker({ langPath: './tessdata', gzip: false });
+  // まずローカルtessdata（オフライン/同梱）を試す
   try {
-    await worker.loadLanguage('jpn+eng');          // ← ここで失敗したら catch 側へ
-    await worker.initialize('jpn+eng');
-    await worker.setParameters({ preserve_interword_spaces: '1' });
-    const { data:{ text } } = await worker.recognize(f);
-    await worker.terminate();
+    const { data: { text } } = await Tesseract.recognize(
+      f,
+      'jpn+eng',
+      { langPath: './tessdata', gzip: false }  // loggerは渡さない
+    );
     return text;
   } catch (e) {
-    // ローカル学習データが無い/読めない → CDN の tessdata に切替
-    try { await worker.terminate(); } catch(_) {}
-    worker = await Tesseract.createWorker({ langPath: 'https://tessdata.projectnaptha.com/4.0.0', gzip: false });
-    await worker.loadLanguage('jpn+eng');
-    await worker.initialize('jpn+eng');
-    await worker.setParameters({ preserve_interword_spaces: '1' });
-    const { data:{ text } } = await worker.recognize(f);
-    await worker.terminate();
+    // 失敗したらCDNの学習データにフォールバック（オンライン時）
+    const { data: { text } } = await Tesseract.recognize(
+      f,
+      'jpn+eng',
+      { langPath: 'https://tessdata.projectnaptha.com/4.0.0', gzip: false }
+    );
     return text;
   }
 }
+
 
 function splitCandidates(text){
   const out=[]; const SPACE2=/[ 　]{2,}/;
@@ -200,5 +198,6 @@ function downloadCSV(name, rows){
 </script>
 </body>
 </html>
+
 
 
