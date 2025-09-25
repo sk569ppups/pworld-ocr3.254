@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>P-WORLD 機種名 抽出ツール（PNG→CSV）</title>
+<style>
+  :root{--g:#10a37f}
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;color:#111}
+  header{padding:14px 18px;border-bottom:1px solid #e5e5e5;font-weight:700}
+  .wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px}
+  .pane{border:1.5px dashed #c7c7c7;border-radius:14px;padding:14px;min-height:220px}
+  .pane.drag{background:#f4fbf9;border-color:#9adac7}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  button{cursor:pointer;border:1px solid #ccc;padding:10px 14px;border-radius:10px;background:#fff}
+  button.primary{border-color:var(--g);color:#fff;background:var(--g);font-weight:600}
+  #log{height:140px;overflow:auto;border:1px solid #eee;padding:10px;border-radius:10px;background:#fafafa}
+  .ok{color:#0a7f5a}.warn{color:#ad6a00}.err{color:#b00020}.muted{color:#666}.small{font-size:12px}
+  .tag{display:inline-block;background:#eee;border-radius:999px;padding:.2em .6em;margin:.2em}
+  code{background:#f4f4f4;padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<header>P-WORLD 機種名 抽出ツール（PNG→CSV, GitHub Pages対応）</header>
+
+<div class="wrap">
+  <div class="pane" id="dropImgs">
+    <b>① 機種一覧の PNG をドロップ（複数OK）</b>
+    <div class="small muted">※PDF→Acrobatスナップショット→分割PNGでOK</div>
+    <div class="row" style="margin-top:10px">
+      <input type="file" id="fileImgs" accept=".png,.jpg,.jpeg" multiple>
+      <button id="btnClearImgs">画像クリア</button>
+    </div>
+    <div id="imgList" class="small muted" style="margin-top:8px"></div>
+  </div>
+
+  <div class="pane" id="dropMaster">
+    <b>② マスターCSV（<code>official_name</code>）をドロップ</b>
+    <div class="row" style="margin-top:10px">
+      <input type="file" id="fileMaster" accept=".csv">
+      <button id="btnClearMaster">マスタークリア</button>
+    </div>
+    <div id="masterInfo" class="small muted" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div style="padding:0 14px 14px">
+  <div class="row">
+    <button class="primary" id="btnRun">抽出</button>
+    <div class="small muted">閾値：<code id="cutoffLbl">90</code></div>
+    <input type="range" id="cutoff" min="70" max="100" value="90" step="1" style="width:180px">
+  </div>
+  <div style="margin-top:10px"><b>ログ</b></div>
+  <div id="log"></div>
+</div>
+
+<script>
+(async function boot(){
+  // 1) Tesseract.js本体のロード（ローカル優先→CDNフォールバック）
+  async function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
+  if(!window.Tesseract){
+    try{ await loadScript('./tesseract.min.js'); }
+    catch(e){ await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'); }
+  }
+})();
+</script>
+
+<script>
+const $ = s=>document.querySelector(s);
+const logBox = $("#log"), imgListBox=$("#imgList"), masterInfo=$("#masterInfo");
+let imageFiles=[], masterList=[];
+
+/* UI */
+function log(msg,cls=""){ const d=document.createElement("div"); if(cls) d.className=cls; d.textContent=msg; logBox.appendChild(d); logBox.scrollTop=logBox.scrollHeight; }
+function fmtBytes(n){ if(n<1024) return n+'B'; const u=['KB','MB','GB']; let i=-1; do{n/=1024;i++;}while(n>=1024&&i<u.length-1); return n.toFixed(1)+u[i]; }
+function renderImgList(){ imgListBox.innerHTML = imageFiles.length ? imageFiles.map(f=>`<span class="tag">${f.name} (${fmtBytes(f.size)})</span>`).join('') : '<span class="muted small">未選択</span>'; }
+function enableDrop(zone, onFiles){
+  zone.addEventListener("dragover", e=>{ e.preventDefault(); zone.classList.add("drag") });
+  zone.addEventListener("dragleave", ()=>zone.classList.remove("drag"));
+  zone.addEventListener("drop", e=>{ e.preventDefault(); zone.classList.remove("drag"); onFiles([...e.dataTransfer.files]); });
+}
+enableDrop($("#dropImgs"), files=>{
+  const imgs = files.filter(f=>/\.(png|jpe?g)$/i.test(f.name));
+  if(!imgs.length){ log("画像ファイル（PNG/JPG）をドロップしてください","warn"); return; }
+  imageFiles = imageFiles.concat(imgs); renderImgList(); log(`画像追加: ${imgs.length}件（合計${imageFiles.length}件）`,"ok");
+});
+enableDrop($("#dropMaster"), files=>{
+  const f = files.find(x=>/\.csv$/i.test(x.name)); if(!f){ log("CSVファイルをドロップしてください","warn"); return; }
+  $("#fileMaster").files = fileListFromArray([f]); readMaster(f);
+});
+function fileListFromArray(arr){ const dt=new DataTransfer(); arr.forEach(f=>dt.items.add(f)); return dt.files; }
+
+$("#fileImgs").addEventListener("change", e=>{ imageFiles=imageFiles.concat([...e.target.files]); renderImgList(); log(`画像追加: ${e.target.files.length}件（合計${imageFiles.length}件）`,"ok"); });
+$("#btnClearImgs").addEventListener("click", ()=>{ imageFiles=[]; renderImgList(); log("画像リストをクリアしました","warn"); });
+
+$("#fileMaster").addEventListener("change", e=>{ const f=e.target.files[0]; if(f) readMaster(f); });
+$("#btnClearMaster").addEventListener("click", ()=>{ masterList=[]; masterInfo.textContent="未読込"; log("マスターCSVをクリアしました","warn"); });
+
+/* CSV */
+async function readMaster(f){ const txt = await f.text(); masterList = parseMasterCSV(txt); masterInfo.textContent = masterList.length?`マスター読込: ${masterList.length}件`:"未読込"; log(masterList.length?`マスター読込: ${masterList.length}件`:"official_name列が見つかりません","ok"); }
+function parseMasterCSV(text){
+  const lines = text.split(/\r?\n/).filter(Boolean); if(!lines.length) return [];
+  const header = splitCsvLine(lines.shift()); const idx = header.findIndex(h=>/official_name/i.test(h)); if(idx===-1) return [];
+  const out=[]; for(const ln of lines){ const cols=splitCsvLine(ln); const v=(cols[idx]??"").trim(); const nm=normalize(v); if(nm) out.push(nm); }
+  return Array.from(new Set(out));
+}
+function splitCsvLine(ln){ const out=[]; let cur="", q=false; for(let i=0;i<ln.length;i++){ const ch=ln[i]; if(ch=='"'){ if(q&&ln[i+1]=='"'){cur+='"'; i++;} else q=!q; } else if(ch=="," && !q){ out.push(cur); cur=""; } else cur+=ch; } out.push(cur); return out; }
+
+/* 正規化 & 類似度 */
+const NOISE=/(新台|おすすめ|準備中|増台|台数|設置機種|ラインナップ)/g;
+function normalize(s){ s=s.normalize("NFKC"); s=s.replace(/[‐－ー–—-]/g,"-"); s=s.replace(/[・／]/g," "); s=s.replace(/\s+/g," ").trim(); s=s.replace(NOISE,""); return s; }
+function sim(a,b){ const m=a.length,n=b.length; if(!m||!n) return 0; const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0)); for(let i=0;i<=m;i++) dp[i][0]=i; for(let j=0;j<=n;j++) dp[0][j]=j; for(let i=1;i<m+1;i++){ for(let j=1;j<n+1;j++){ const cost=a[i-1]===b[j-1]?0:1; dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+cost);} } const dist=dp[m][n]; return Math.round((1 - dist/Math.max(m,n))*100); }
+
+/* OCR */
+async function runOcrOnFile(f){
+  const worker = await Tesseract.createWorker({
+    // まずローカルtessdataを探す。なければCDNへ（Pagesオンライン運用向け）
+    langPath: './tessdata',
+    gzip: false,
+    logger: m => { if(m.status) log(`${m.status} ${m.progress?Math.round(m.progress*100):""}%`) }
+  });
+  try{
+    await worker.loadLanguage('jpn+eng');
+  }catch(e){
+    // ローカルtessdataが無い場合：CDNの学習データを使用
+    await worker.terminate();
+    const worker2 = await Tesseract.createWorker({ langPath:'https://tessdata.projectnaptha.com/4.0.0', gzip: false });
+    await worker2.loadLanguage('jpn+eng'); await worker2.initialize('jpn+eng');
+    const { data:{ text } } = await worker2.recognize(f); await worker2.terminate(); return text;
+  }
+  await worker.initialize('jpn+eng');
+  await worker.setParameters({ preserve_interword_spaces: '1' });
+  const { data:{ text } } = await worker.recognize(f);
+  await worker.terminate();
+  return text;
+}
+function splitCandidates(text){
+  const out=[]; const SPACE2=/[ 　]{2,}/;
+  for(const raw of text.split(/\r?\n/)){
+    let ln=raw.trim(); if(!ln) continue;
+    for(const p of ln.split(SPACE2)){ const x=normalize(p); if(x && x.length>=2) out.push(x); }
+  }
+  return Array.from(new Set(out));
+}
+
+/* 実行 */
+const cutoffInput = $("#cutoff"), cutoffLbl=$("#cutoffLbl");
+cutoffInput.addEventListener("input", e=>{ cutoffLbl.textContent=e.target.value; });
+
+$("#btnRun").addEventListener("click", async ()=>{
+  if(!imageFiles.length){ log("画像が未選択です（PNG/JPGをドロップまたは選択）","warn"); return; }
+  if(!masterList.length){ log("マスターCSVが未選択です（official_name列が必要）","warn"); return; }
+
+  const cutoff = Number(cutoffInput.value||90);
+  log(`開始: 画像 ${imageFiles.length}件 / マスター ${masterList.length}件 / 閾値 ${cutoff}%`);
+
+  let allText="";
+  for(let i=0;i<imageFiles.length;i++){
+    const f=imageFiles[i]; log(`OCR中: ${f.name} ...`);
+    try{ const t=await runOcrOnFile(f); allText+="\n"+t; log(`完了: ${f.name}`,"ok"); }
+    catch(err){ console.error(err); log(`OCR失敗: ${f.name} (${err.message||err})`,"err"); }
+  }
+
+  const cands = splitCandidates(allText);
+  log(`候補生成: ${cands.length}件`,"ok");
+
+  const rows = [["raw_norm","matched_official","score","status"]];
+  const review = [["raw_norm","matched_official","score","status"]];
+
+  for(const c of cands){
+    let best="",score=-1;
+    for(const m of masterList){ const s=sim(c,m); if(s>score){ score=s; best=m; if(s===100) break; } }
+    const status = score>=cutoff ? "auto" : "review";
+    const rec=[c,best,score,status]; rows.push(rec); if(status==="review") review.push(rec);
+  }
+
+  downloadCSV("machines_extracted.csv", rows);
+  downloadCSV("machines_review.csv", review);
+  log(`出力: extracted(${rows.length-1}) / review(${review.length-1})`,"ok");
+});
+
+function downloadCSV(name, rows){
+  const csv = rows.map(r=>r.map(v=>String(v??"").replace(/"/g,'""')).map(v=>`"${v}"`).join(",")).join("\r\n");
+  const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a = Object.assign(document.createElement("a"), {href:URL.createObjectURL(blob),download:name});
+  a.click(); URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
