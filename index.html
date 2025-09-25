@@ -112,28 +112,30 @@ function normalize(s){ s=s.normalize("NFKC"); s=s.replace(/[‐－ー–—-]/g,
 function sim(a,b){ const m=a.length,n=b.length; if(!m||!n) return 0; const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0)); for(let i=0;i<=m;i++) dp[i][0]=i; for(let j=0;j<=n;j++) dp[0][j]=j; for(let i=1;i<m+1;i++){ for(let j=1;j<n+1;j++){ const cost=a[i-1]===b[j-1]?0:1; dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+cost);} } const dist=dp[m][n]; return Math.round((1 - dist/Math.max(m,n))*100); }
 
 /* OCR */
+// 置き換え：OCR実行部分
 async function runOcrOnFile(f){
- const worker = await Tesseract.createWorker({
-  langPath: './tessdata',
-  gzip: false
-});
-// loggerオプションは削除
-
-  try{
-    await worker.loadLanguage('jpn+eng');
-  }catch(e){
-    // ローカルtessdataが無い場合：CDNの学習データを使用
+  // まずローカル tessdata を試す
+  let worker = await Tesseract.createWorker({ langPath: './tessdata', gzip: false });
+  try {
+    await worker.loadLanguage('jpn+eng');          // ← ここで失敗したら catch 側へ
+    await worker.initialize('jpn+eng');
+    await worker.setParameters({ preserve_interword_spaces: '1' });
+    const { data:{ text } } = await worker.recognize(f);
     await worker.terminate();
-    const worker2 = await Tesseract.createWorker({ langPath:'https://tessdata.projectnaptha.com/4.0.0', gzip: false });
-    await worker2.loadLanguage('jpn+eng'); await worker2.initialize('jpn+eng');
-    const { data:{ text } } = await worker2.recognize(f); await worker2.terminate(); return text;
+    return text;
+  } catch (e) {
+    // ローカル学習データが無い/読めない → CDN の tessdata に切替
+    try { await worker.terminate(); } catch(_) {}
+    worker = await Tesseract.createWorker({ langPath: 'https://tessdata.projectnaptha.com/4.0.0', gzip: false });
+    await worker.loadLanguage('jpn+eng');
+    await worker.initialize('jpn+eng');
+    await worker.setParameters({ preserve_interword_spaces: '1' });
+    const { data:{ text } } = await worker.recognize(f);
+    await worker.terminate();
+    return text;
   }
-  await worker.initialize('jpn+eng');
-  await worker.setParameters({ preserve_interword_spaces: '1' });
-  const { data:{ text } } = await worker.recognize(f);
-  await worker.terminate();
-  return text;
 }
+
 function splitCandidates(text){
   const out=[]; const SPACE2=/[ 　]{2,}/;
   for(const raw of text.split(/\r?\n/)){
@@ -179,13 +181,24 @@ $("#btnRun").addEventListener("click", async ()=>{
   log(`出力: extracted(${rows.length-1}) / review(${review.length-1})`,"ok");
 });
 
+// 置き換え
 function downloadCSV(name, rows){
-  const csv = rows.map(r=>r.map(v=>String(v??"").replace(/"/g,'""')).map(v=>`"${v}"`).join(",")).join("\r\n");
+  if (!Array.isArray(rows)) {
+    console.error('rows is not an array:', rows);
+    return;
+  }
+  const csv = rows.map(r => {
+    if(!Array.isArray(r)) return "";      // ← 保険
+    return r.map(v => String(v ?? "").replace(/"/g,'""'))
+            .map(v => `"${v}"`).join(",");
+  }).join("\r\n");
   const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
-  const a = Object.assign(document.createElement("a"), {href:URL.createObjectURL(blob),download:name});
+  const a = Object.assign(document.createElement("a"), {href:URL.createObjectURL(blob), download:name});
   a.click(); URL.revokeObjectURL(a.href);
 }
+
 </script>
 </body>
 </html>
+
 
